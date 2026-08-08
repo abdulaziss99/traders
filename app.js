@@ -431,9 +431,9 @@ function renderTrade() {
           <div class="symbol-row">
             <div>
               <div style="font-size:12px;color:var(--muted);font-weight:700;">XAUUSD · Gold Spot / U.S. Dollar</div>
-              <div class="px" id="tv_px">2,344.21</div>
+              <div class="px" id="tv_px">Lihat harga live di chart ↓</div>
             </div>
-            <div class="chg up" id="tv_chg">+12.45 (+0.53%)</div>
+            <div class="chg" id="tv_chg" style="color:var(--muted);font-weight:700;font-size:11.5px;">Harga real-time ditampilkan langsung oleh TradingView di bawah</div>
           </div>
           <div id="tv_chart_container"><div id="tv_chart" style="width:100%;height:100%;"></div></div>
         </div>
@@ -468,6 +468,7 @@ function renderTrade() {
   loadTradingViewWidget();
   renderSessionList();
   renderAIAnalysis();
+  fetchLiveGoldPrice();
   renderPrediction();
 }
 
@@ -503,6 +504,34 @@ function loadTradingViewWidget() {
   document.head.appendChild(s);
 }
 
+/* ---------------- Live Gold Price (opsional, via GoldAPI.io) ---------------- */
+let goldPriceTimer = null;
+async function fetchLiveGoldPrice() {
+  clearInterval(goldPriceTimer);
+  const pxEl = document.getElementById('tv_px');
+  const chgEl = document.getElementById('tv_chg');
+  if (!state.keys.goldapi) return; // biarkan pesan default "Lihat harga live di chart"
+  async function pull() {
+    try {
+      const res = await fetch('https://www.goldapi.io/api/XAU/USD', {
+        headers: { 'x-access-token': state.keys.goldapi, 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!data.price) throw new Error('no price');
+      if (pxEl) pxEl.textContent = Number(data.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      if (chgEl) {
+        const chg = data.ch ?? 0, chgP = data.chp ?? 0;
+        chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgP >= 0 ? '+' : ''}${chgP.toFixed(2)}%)`;
+        chgEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+    } catch (e) {
+      if (pxEl) pxEl.textContent = 'Lihat harga live di chart ↓';
+    }
+  }
+  pull();
+  goldPriceTimer = setInterval(pull, 60 * 1000); // hemat kuota, refresh tiap 1 menit
+}
+
 /* ---------------- Live Clock & Market Session ---------------- */
 const SESSIONS = [
   { name: 'Sydney',   startUTC: 22, endUTC: 7  },
@@ -534,16 +563,27 @@ function renderSessionList() {
     </div>`;
   }).join('');
 }
+function getWIBParts(now) {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jakarta', hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = {};
+  fmt.formatToParts(now).forEach(p => { if (p.type !== 'literal') parts[p.type] = p.value; });
+  return parts;
+}
 function tickClock() {
   const now = new Date();
-  const wib = new Date(now.getTime() + (7*60 - now.getTimezoneOffset()) * 60000);
-  const hh = String(wib.getHours()).padStart(2,'0');
-  const mm = String(wib.getMinutes()).padStart(2,'0');
-  const ss = String(wib.getSeconds()).padStart(2,'0');
+  const p = getWIBParts(now);
   const clockEl = document.getElementById('liveClock');
   const dateEl = document.getElementById('liveClockDate');
-  if (clockEl) clockEl.textContent = `${hh}:${mm}:${ss} WIB`;
-  if (dateEl) dateEl.textContent = fmtDateID(now);
+  if (clockEl) clockEl.textContent = `${p.hour}:${p.minute}:${p.second} WIB`;
+  if (dateEl) {
+    // Bikin Date lokal murni dari komponen Y-M-D Jakarta (tanpa jam) supaya nama hari akurat
+    const wibDateOnly = new Date(Number(p.year), Number(p.month) - 1, Number(p.day));
+    dateEl.textContent = fmtDateID(wibDateOnly);
+  }
   if (state.activeTab === 'trade' && now.getSeconds() % 15 === 0) renderSessionList();
 }
 setInterval(tickClock, 1000);
@@ -616,9 +656,11 @@ const NEWS_SOURCES = {
     { name: 'TradingEconomics', stars: 5 },
   ],
 };
+function normalizeKey(s) { return (s || '').toLowerCase().replace(/^www\./, '').replace(/\.(com|co\.id|id|io)$/,'').replace(/[^a-z0-9]/g,''); }
 function sourceStars(name) {
   const all = [...NEWS_SOURCES.indonesia, ...NEWS_SOURCES.global];
-  const f = all.find(s => name.toLowerCase().includes(s.name.toLowerCase()));
+  const nk = normalizeKey(name);
+  const f = all.find(s => { const sk = normalizeKey(s.name); return nk.includes(sk) || sk.includes(nk); });
   return f ? f.stars : 3;
 }
 
@@ -645,61 +687,78 @@ function impactScore(title) {
 
 function demoNews() {
   const base = [
-    { title: 'The Fed Sinyalkan Pemangkasan Suku Bunga September', source: 'Bloomberg Technoz', hoursAgo: 1 },
-    { title: 'Emas Menguat di Tengah Melemahnya Dolar AS', source: 'CNBC Indonesia', hoursAgo: 2 },
-    { title: 'Ketegangan Timur Tengah Dorong Permintaan Safe Haven', source: 'Reuters', hoursAgo: 3 },
-    { title: 'Data NFP AS di Bawah Ekspektasi, Emas Naik', source: 'Detik Finance', hoursAgo: 4 },
-    { title: 'Harga Emas Sentuh Level Tertinggi 2 Minggu', source: 'Kitco', hoursAgo: 5 },
-    { title: 'Bank Dunia Turunkan Proyeksi Pertumbuhan Global', source: 'Bisnis Indonesia', hoursAgo: 1.2 },
-    { title: 'Rupiah Menguat, DXY Melemah ke 104.2', source: 'Detik Finance', hoursAgo: 1.5 },
-    { title: 'Bi Pertahankan Suku Bunga Acuan di 6.25%', source: 'Kontan', hoursAgo: 2.1 },
-    { title: 'Harga Emas Antam Hari Ini Naik Rp4.000', source: 'Bisnis Indonesia', hoursAgo: 2.5 },
-    { title: 'IHSG Menguat Jelang Rilis Data Inflasi AS', source: 'IDX Channel', hoursAgo: 2.8 },
-    { title: 'Yield Obligasi AS 10 Tahun Turun di Bawah 4.30%', source: 'CNBC Indonesia', hoursAgo: 0.4 },
-    { title: 'Investor Global Alihkan Portofolio ke Aset Safe Haven', source: 'Bloomberg', hoursAgo: 0.6 },
-    { title: 'Analis Kitco: Emas Berpotensi Uji Level $2,400', source: 'Kitco', hoursAgo: 0.8 },
-    { title: 'Powell: The Fed Masih Data Dependent Soal Rate Cut', source: 'Reuters', hoursAgo: 1.1 },
-    { title: 'ForexLive: DXY Tertekan Jelang Rilis CPI AS', source: 'ForexLive', hoursAgo: 1.3 },
-    { title: 'Harga Emas Dunia Dibuka Menguat di Sesi Asia', source: 'Antara Ekonomi', hoursAgo: 1.6 },
-    { title: 'FXStreet: Technical Outlook XAUUSD Masih Bullish', source: 'FXStreet', hoursAgo: 1.9 },
-    { title: 'Klaim Pengangguran AS Naik Tipis Minggu Ini', source: 'Investing.com', hoursAgo: 2.3 },
-    { title: 'PPI AS Sesuai Ekspektasi, Pasar Tenang', source: 'MarketWatch', hoursAgo: 2.6 },
-    { title: 'TradingEconomics: Kalender Ekonomi Padat Pekan Ini', source: 'TradingEconomics', hoursAgo: 3.1 },
-    { title: 'China Perlambatan Ekonomi Tekan Permintaan Komoditas', source: 'Bloomberg', hoursAgo: 3.4 },
-    { title: 'Emiten Tambang Emas RI Catat Kenaikan Produksi Q2', source: 'Kontan', hoursAgo: 3.8 },
-    { title: 'Bisnis Indonesia: Rupiah Ditutup Menguat 15 Poin', source: 'Bisnis Indonesia', hoursAgo: 4.2 },
-    { title: 'Geopolitik Timur Tengah Memanas, Minyak & Emas Naik', source: 'Reuters', hoursAgo: 4.6 },
-    { title: 'IDX Channel: Sentimen Fed Dominasi Perdagangan Hari Ini', source: 'IDX Channel', hoursAgo: 5.1 },
+    { title: 'The Fed Sinyalkan Pemangkasan Suku Bunga September', source: 'Bloomberg Technoz', region: 'indonesia', hoursAgo: 1 },
+    { title: 'Emas Menguat di Tengah Melemahnya Dolar AS', source: 'CNBC Indonesia', region: 'indonesia', hoursAgo: 2 },
+    { title: 'Data NFP AS di Bawah Ekspektasi, Emas Naik', source: 'Detik Finance', region: 'indonesia', hoursAgo: 4 },
+    { title: 'Bank Dunia Turunkan Proyeksi Pertumbuhan Global', source: 'Bisnis Indonesia', region: 'indonesia', hoursAgo: 1.2 },
+    { title: 'Rupiah Menguat, DXY Melemah ke 104.2', source: 'Detik Finance', region: 'indonesia', hoursAgo: 1.5 },
+    { title: 'BI Pertahankan Suku Bunga Acuan di 6.25%', source: 'Kontan', region: 'indonesia', hoursAgo: 2.1 },
+    { title: 'Harga Emas Antam Hari Ini Naik Rp4.000', source: 'Bisnis Indonesia', region: 'indonesia', hoursAgo: 2.5 },
+    { title: 'IHSG Menguat Jelang Rilis Data Inflasi AS', source: 'IDX Channel', region: 'indonesia', hoursAgo: 2.8 },
+    { title: 'Yield Obligasi AS 10 Tahun Turun di Bawah 4.30%', source: 'CNBC Indonesia', region: 'indonesia', hoursAgo: 0.4 },
+    { title: 'Harga Emas Dunia Dibuka Menguat di Sesi Asia', source: 'Antara Ekonomi', region: 'indonesia', hoursAgo: 1.6 },
+    { title: 'Emiten Tambang Emas RI Catat Kenaikan Produksi Q2', source: 'Kontan', region: 'indonesia', hoursAgo: 3.8 },
+    { title: 'Bisnis Indonesia: Rupiah Ditutup Menguat 15 Poin', source: 'Bisnis Indonesia', region: 'indonesia', hoursAgo: 4.2 },
+    { title: 'IDX Channel: Sentimen Fed Dominasi Perdagangan Hari Ini', source: 'IDX Channel', region: 'indonesia', hoursAgo: 5.1 },
+    { title: 'Ketegangan Timur Tengah Dorong Permintaan Safe Haven', source: 'Reuters', region: 'global', hoursAgo: 3 },
+    { title: 'Harga Emas Sentuh Level Tertinggi 2 Minggu', source: 'Kitco', region: 'global', hoursAgo: 5 },
+    { title: 'Investor Global Alihkan Portofolio ke Aset Safe Haven', source: 'Bloomberg', region: 'global', hoursAgo: 0.6 },
+    { title: 'Analis Kitco: Emas Berpotensi Uji Level $2,400', source: 'Kitco', region: 'global', hoursAgo: 0.8 },
+    { title: 'Powell: The Fed Masih Data Dependent Soal Rate Cut', source: 'Reuters', region: 'global', hoursAgo: 1.1 },
+    { title: 'ForexLive: DXY Tertekan Jelang Rilis CPI AS', source: 'ForexLive', region: 'global', hoursAgo: 1.3 },
+    { title: 'FXStreet: Technical Outlook XAUUSD Masih Bullish', source: 'FXStreet', region: 'global', hoursAgo: 1.9 },
+    { title: 'Klaim Pengangguran AS Naik Tipis Minggu Ini', source: 'Investing.com', region: 'global', hoursAgo: 2.3 },
+    { title: 'PPI AS Sesuai Ekspektasi, Pasar Tenang', source: 'MarketWatch', region: 'global', hoursAgo: 2.6 },
+    { title: 'TradingEconomics: Kalender Ekonomi Padat Pekan Ini', source: 'TradingEconomics', region: 'global', hoursAgo: 3.1 },
+    { title: 'China Perlambatan Ekonomi Tekan Permintaan Komoditas', source: 'Bloomberg', region: 'global', hoursAgo: 3.4 },
+    { title: 'Geopolitik Timur Tengah Memanas, Minyak & Emas Naik', source: 'Reuters', region: 'global', hoursAgo: 4.6 },
   ];
-  return base.map(n => ({ ...n, impact: impactScore(n.title), sentiment: classifyNews(n.title) }));
+  // Geser sedikit "hoursAgo" tiap kali dipanggil biar kerasa "hidup" waktu refresh manual dipakai sebagai fallback
+  return base.map(n => ({ ...n, hoursAgo: Math.max(0.1, n.hoursAgo + (Math.random()*0.4 - 0.2)), impact: impactScore(n.title), sentiment: classifyNews(n.title) }));
 }
 
-async function fetchMarketauxNews() {
+const REGION_DOMAINS = {
+  indonesia: 'cnbcindonesia.com,bisnis.com,kontan.co.id,idxchannel.com,antaranews.com,detik.com,finance.detik.com,bloombergtechnoz.com',
+  global: 'reuters.com,bloomberg.com,kitco.com,investing.com,forexlive.com,fxstreet.com,marketwatch.com,tradingeconomics.com',
+};
+async function fetchMarketauxRegion(region) {
   const key = state.keys.marketaux;
   if (!key) return null;
   try {
-    const url = `https://api.marketaux.com/v1/news/all?symbols=XAU,GOLD&filter_entities=true&language=en,id&api_token=${encodeURIComponent(key)}`;
+    const publishedAfter = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString().slice(0, 19);
+    const search = region === 'indonesia'
+      ? encodeURIComponent('emas OR dolar OR "the fed" OR "suku bunga" OR rupiah OR inflasi')
+      : encodeURIComponent('gold OR XAUUSD OR "interest rate" OR inflation OR "federal reserve" OR dollar');
+    const lang = region === 'indonesia' ? 'id' : 'en';
+    const url = `https://api.marketaux.com/v1/news/all?domains=${REGION_DOMAINS[region]}&search=${search}&language=${lang}&published_after=${publishedAfter}&sort=published_desc&limit=15&api_token=${encodeURIComponent(key)}`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error('bad response');
+    if (!res.ok) throw new Error('bad response ' + res.status);
     const data = await res.json();
-    if (!data.data) return null;
-    return data.data.slice(0, 12).map(a => ({
+    if (!data.data || !data.data.length) return null;
+    return data.data.map(a => ({
       title: a.title,
-      source: a.source || 'Marketaux',
-      hoursAgo: Math.max(0.1, (Date.now() - new Date(a.published_at).getTime()) / 3600000),
+      source: (a.source || '').replace(/^www\./, '') || 'Marketaux',
+      region,
+      hoursAgo: Math.max(0.05, (Date.now() - new Date(a.published_at).getTime()) / 3600000),
       impact: impactScore(a.title),
       sentiment: classifyNews(a.title),
     }));
-  } catch (e) { return null; }
+  } catch (e) { console.error('fetchMarketauxRegion(' + region + ')', e); return null; }
 }
 
-let newsCache = null;
+let newsCache = null; // { indonesia: [...], global: [...] }
 let newsLastFetch = 0;
 async function getNews(forceRefresh) {
   const now = Date.now();
   if (!forceRefresh && newsCache && (now - newsLastFetch) < 5 * 60 * 1000) return newsCache;
-  const live = await fetchMarketauxNews();
-  newsCache = live || demoNews();
+  const [liveID, liveGlobal] = await Promise.all([fetchMarketauxRegion('indonesia'), fetchMarketauxRegion('global')]);
+  const demo = demoNews();
+  newsCache = {
+    indonesia: (liveID && liveID.length >= 3) ? liveID : demo.filter(n => n.region === 'indonesia'),
+    global: (liveGlobal && liveGlobal.length >= 3) ? liveGlobal : demo.filter(n => n.region === 'global'),
+    liveID: !!(liveID && liveID.length >= 3),
+    liveGlobal: !!(liveGlobal && liveGlobal.length >= 3),
+  };
   newsLastFetch = now;
   return newsCache;
 }
@@ -713,10 +772,9 @@ function overallSentiment(news) {
 
 async function renderBerita(forceRefresh) {
   const panel = document.getElementById('panel-berita');
-  const isDemo = !state.keys.marketaux;
   panel.innerHTML = `
     <div class="section-title" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
-      <span>3. Berita <small>${isDemo ? 'mode demo — isi Marketaux API key di ⚙️ untuk data live' : 'live via Marketaux · auto-update tiap 5 menit'}</small></span>
+      <span>3. Berita <small id="newsStatusLabel">memuat...</small></span>
       <span style="display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted);font-weight:600;">
         <span id="newsUpdatedAt">Terakhir update: -</span>
         <button class="btn btn-outline btn-sm" id="btnRefreshNews">🔄 Refresh</button>
@@ -745,16 +803,23 @@ async function renderBerita(forceRefresh) {
     toast('Berita diperbarui.');
   };
 
-  const news = await getNews(forceRefresh);
+  const cache = await getNews(forceRefresh);
+  const statusEl = document.getElementById('newsStatusLabel');
+  if (statusEl) {
+    const idLabel = cache.liveID ? 'Indonesia: live' : 'Indonesia: demo';
+    const glLabel = cache.liveGlobal ? 'Global: live' : 'Global: demo';
+    statusEl.textContent = `${idLabel} · ${glLabel} · auto-update tiap 5 menit`;
+  }
   const updEl = document.getElementById('newsUpdatedAt');
-  if (updEl) updEl.textContent = 'Terakhir update: ' + new Date(newsLastFetch).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (updEl) { const p = getWIBParts(new Date(newsLastFetch)); updEl.textContent = `Terakhir update: ${p.hour}:${p.minute}:${p.second} WIB`; }
   paintNewsBody();
 
   function paintNewsBody() {
     const body = document.getElementById('newsBody');
     if (!body) return;
+    const all = [...cache.indonesia, ...cache.global];
     if (state.newsFilter === 'ringkasan') {
-      const sent = overallSentiment(news);
+      const sent = overallSentiment(all);
       const driverRows = [
         ['Dollar Index', sent === 'bullish' ? 'Bearish' : sent === 'bearish' ? 'Bullish' : 'Neutral', 80],
         ['Bond Yield (US10Y)', sent === 'bullish' ? 'Bearish' : 'Neutral', 75],
@@ -762,13 +827,13 @@ async function renderBerita(forceRefresh) {
         ['China Economy', 'Neutral', 40],
         ['Inflasi (US)', 'Neutral', 35],
       ];
-      const top = [...news].sort((a,b) => b.impact - a.impact).slice(0,5);
+      const top = [...all].sort((a,b) => b.impact - a.impact || a.hoursAgo - b.hoursAgo).slice(0,6);
       body.innerHTML = `
         <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
           <div class="ai-summary-box">
             <div style="font-size:11px;color:var(--muted);font-weight:700;">RINGKASAN AI HARI INI</div>
             <div class="tag ${sent}">${sent === 'bullish' ? '🟢 BULLISH GOLD' : sent === 'bearish' ? '🔴 BEARISH GOLD' : '⚪ NEUTRAL GOLD'}</div>
-            ${news.slice(0,4).map(n => `<div style="font-size:12px;color:var(--muted);padding:4px 0;">✔️ ${n.title}</div>`).join('')}
+            ${top.slice(0,4).map(n => `<div style="font-size:12px;color:var(--muted);padding:4px 0;">✔️ ${n.title}</div>`).join('')}
           </div>
           <div class="card" style="padding:12px;">
             <div class="card-title" style="margin-bottom:6px;">Market Driver</div>
@@ -781,13 +846,11 @@ async function renderBerita(forceRefresh) {
         </div>
       `;
     } else if (state.newsFilter === 'top') {
-      const top = [...news].sort((a,b) => b.impact - a.impact);
+      const top = [...all].sort((a,b) => b.impact - a.impact || a.hoursAgo - b.hoursAgo);
       body.innerHTML = `<div class="card">${top.map((n,i) => newsItemHTML(n,i+1)).join('')}</div>`;
     } else {
-      const srcList = state.newsFilter === 'indonesia' ? NEWS_SOURCES.indonesia.map(s=>s.name) : NEWS_SOURCES.global.map(s=>s.name);
-      const filtered = news.filter(n => srcList.some(s => n.source.toLowerCase().includes(s.toLowerCase())));
-      const list = filtered.length ? filtered : news;
-      body.innerHTML = `<div class="card">${list.map((n,i) => newsItemHTML(n,i+1)).join('')}</div>`;
+      const list = [...(state.newsFilter === 'indonesia' ? cache.indonesia : cache.global)].sort((a,b) => a.hoursAgo - b.hoursAgo);
+      body.innerHTML = `<div class="card">${list.map((n,i) => newsItemHTML(n,i+1)).join('') || '<div style="padding:20px;text-align:center;color:var(--muted);">Belum ada berita.</div>'}</div>`;
     }
   }
 }
@@ -813,65 +876,53 @@ function newsItemHTML(n, rank) {
 // Auto-refresh berita tiap 5 menit biar selalu up-to-date
 setInterval(() => { if (state.activeTab === 'berita') renderBerita(true); }, 5 * 60 * 1000);
 
-/* ---------------- Kalender Ekonomi ---------------- */
-function demoCalendar(dateStr) {
-  return [
-    { time: '08:30', country: 'US', flag: '🇺🇸', event: 'Non-Farm Payrolls (May)', impact: 5, actual: '256K', forecast: '185K', previous: '175K', note: 'Actual > Forecast → USD Menguat → Gold kemungkinan TURUN' },
-    { time: '10:00', country: 'US', flag: '🇺🇸', event: 'Unemployment Rate (May)', impact: 4, actual: '3.7%', forecast: '3.9%', previous: '3.9%', note: 'Actual < Forecast → USD Melemah → Gold kemungkinan NAIK' },
-    { time: '19:30', country: 'US', flag: '🇺🇸', event: 'Average Hourly Earnings (MoM)', impact: 3, actual: '0.3%', forecast: '0.3%', previous: '0.4%', note: 'Sesuai ekspektasi → Dampak Netral' },
-    { time: '20:30', country: 'US', flag: '🇺🇸', event: 'Fed Chair Powell Speech', impact: 5, actual: '-', forecast: '-', previous: '-', note: 'Volatilitas Tinggi → Waspada' },
-    { time: '21:45', country: 'US', flag: '🇺🇸', event: 'FOMC Member Bowman Speech', impact: 3, actual: '-', forecast: '-', previous: '-', note: 'Volatilitas sedang' },
-  ];
+/* ---------------- Kalender Ekonomi (TradingView Economic Calendar widget) ----------------
+   Ganti dari Finnhub (yang free-tier-nya sering gak nyediain endpoint kalender ekonomi)
+   ke widget resmi TradingView. Gratis, gak butuh API key, datanya beneran live dari mereka.
+------------------------------------------------------------------------------------------- */
+let tvCalendarLoaded = false;
+function loadTVEconomicCalendar(importanceFilter) {
+  const container = document.getElementById('tv_calendar');
+  if (!container) return;
+  container.innerHTML = `
+    <div class="tradingview-widget-container" style="height:100%;width:100%;">
+      <div class="tradingview-widget-container__widget"></div>
+    </div>
+  `;
+  const widgetDiv = container.querySelector('.tradingview-widget-container__widget');
+  const script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-events.js';
+  script.async = true;
+  script.innerHTML = JSON.stringify({
+    colorTheme: document.documentElement.classList.contains('light') ? 'light' : 'dark',
+    isTransparent: true,
+    width: '100%',
+    height: '100%',
+    locale: 'in', // kode locale Bahasa Indonesia di TradingView
+    importanceFilter: importanceFilter || '-1,0,1',
+    countryFilter: 'us,eu,gb,jp,cn,id,au,ca,ch,nz',
+  });
+  widgetDiv.appendChild(script);
+  tvCalendarLoaded = true;
 }
-async function fetchFinnhubCalendar() {
-  const key = state.keys.finnhub;
-  if (!key) return null;
-  try {
-    const today = new Date().toISOString().slice(0,10);
-    const url = `https://finnhub.io/api/v1/calendar/economic?from=${today}&to=${today}&token=${encodeURIComponent(key)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('bad');
-    const data = await res.json();
-    if (!data.economicCalendar) return null;
-    return data.economicCalendar.map(e => ({
-      time: (e.time || '').slice(11,16) || '--:--',
-      country: e.country || '-', flag: '🌐', event: e.event || '-',
-      impact: e.impact === 'high' ? 5 : e.impact === 'medium' ? 3 : 1,
-      actual: e.actual ?? '-', forecast: e.estimate ?? '-', previous: e.prev ?? '-',
-      note: 'Data dari Finnhub',
-    }));
-  } catch (e) { return null; }
-}
-function impactLabel(n) { return n>=5?'High':n>=3?'Medium':'Low'; }
-function impactColor(n) { return n>=5?'var(--red)':n>=3?'var(--gold)':'var(--green)'; }
 
 async function renderKalender() {
   const panel = document.getElementById('panel-kalender');
-  const isDemo = !state.keys.finnhub;
   panel.innerHTML = `
-    <div class="section-title">4. Ekonomi Kalender <small>${isDemo?'mode demo — isi Finnhub API key di ⚙️ untuk data live':'live via Finnhub'}</small></div>
+    <div class="section-title">4. Ekonomi Kalender <small>live via TradingView · gratis, tanpa API key</small></div>
     <div class="cal-layout">
-      <div class="card">
-        <div class="cal-toolbar">
-          <div class="cal-nav">
-            <button id="calPrev">‹</button>
-            <button class="today-btn" id="calToday">Today</button>
-            <button id="calNext">›</button>
-            <b id="calDateLabel" style="margin-left:6px;font-size:13px;"></b>
-          </div>
+      <div class="card" style="padding:10px;">
+        <div class="cal-toolbar" style="padding:0 4px;">
+          <div style="font-size:11.5px;color:var(--muted);font-weight:700;">Filter dampak &amp; negara ada langsung di widget di bawah ⬇️</div>
           <div class="impact-filters" id="impactFilters">
-            <button data-i="all" class="active">All Impact</button>
-            <button data-i="5"><span class="impact-dot" style="background:var(--red)"></span>High</button>
-            <button data-i="3"><span class="impact-dot" style="background:var(--gold)"></span>Medium</button>
-            <button data-i="1"><span class="impact-dot" style="background:var(--green)"></span>Low</button>
+            <button data-i="-1,0,1" class="active">All Impact</button>
+            <button data-i="1"><span class="impact-dot" style="background:var(--red)"></span>High</button>
+            <button data-i="0"><span class="impact-dot" style="background:var(--gold)"></span>Medium</button>
+            <button data-i="-1"><span class="impact-dot" style="background:var(--green)"></span>Low</button>
           </div>
         </div>
-        <div class="table-scroll">
-          <table class="cal-table">
-            <thead><tr><th>Waktu (WIB)</th><th>Negara</th><th>Event</th><th>Dampak</th><th>Actual</th><th>Forecast</th><th>Previous</th></tr></thead>
-            <tbody id="calBody"></tbody>
-          </table>
-        </div>
+        <div id="tv_calendar" style="height:600px;width:100%;"></div>
       </div>
       <div>
         <div class="card">
@@ -884,41 +935,15 @@ async function renderKalender() {
     </div>
   `;
 
-  document.getElementById('calDateLabel').textContent = fmtDateID(state.calDate);
-  document.getElementById('calPrev').onclick = () => { state.calDate.setDate(state.calDate.getDate()-1); renderKalender(); };
-  document.getElementById('calNext').onclick = () => { state.calDate.setDate(state.calDate.getDate()+1); renderKalender(); };
-  document.getElementById('calToday').onclick = () => { state.calDate = new Date(); renderKalender(); };
   panel.querySelectorAll('#impactFilters button').forEach(b => {
     b.onclick = () => {
-      panel.querySelectorAll('#impactFilters button').forEach(x=>x.classList.remove('active'));
+      panel.querySelectorAll('#impactFilters button').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
-      state.calImpactFilter = b.dataset.i;
-      paintCalBody(currentCalData);
+      loadTVEconomicCalendar(b.dataset.i);
     };
   });
 
-  let currentCalData = (await fetchFinnhubCalendar()) || demoCalendar();
-  paintCalBody(currentCalData);
-
-  function paintCalBody(data) {
-    const body = document.getElementById('calBody');
-    if (!body) return;
-    const filtered = state.calImpactFilter === 'all' ? data : data.filter(d => String(d.impact) === state.calImpactFilter);
-    body.innerHTML = filtered.map(d => `
-      <tr>
-        <td><b>${d.time}</b></td>
-        <td>${d.flag} ${d.country}</td>
-        <td>
-          <div>${'★'.repeat(Math.min(5,Math.ceil(d.impact))).padEnd(5,'☆')} ${d.event}</div>
-          <div style="font-size:10.5px;color:var(--muted);margin-top:2px;">${d.note}</div>
-        </td>
-        <td><span class="impact-dot" style="background:${impactColor(d.impact)}"></span>${impactLabel(d.impact)}</td>
-        <td>${d.actual}</td>
-        <td>${d.forecast}</td>
-        <td>${d.previous}</td>
-      </tr>
-    `).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px;">Tidak ada event untuk filter ini.</td></tr>`;
-  }
+  loadTVEconomicCalendar('-1,0,1');
 }
 
 /* ---------------- Google Sheet Sync (via Apps Script Web App) ----------------
@@ -1217,6 +1242,7 @@ function wireGlobalEvents() {
     document.getElementById('themeToggle').textContent = isLight ? '🌙' : '☀️';
     if (state.activeTab === 'dashboard') renderDashboard();
     if (state.activeTab === 'trade') loadTradingViewWidget();
+    if (state.activeTab === 'kalender') loadTVEconomicCalendar(document.querySelector('#impactFilters button.active')?.dataset.i || '-1,0,1');
   };
 }
 
