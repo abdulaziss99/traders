@@ -21,13 +21,15 @@ const LS_THEME   = 'xaupro_theme_v1';
 const DEFAULT_KEYS = {
   finnhub: 'd91knkpr01qqfqkcnrngd91knkpr01qqfqkcnro0',
   marketaux: 'PXpmSrBsqe9GLiJQHjJdSNRfTnKFoPD9z0ibBOEd',
-  goldapi: '',
+  goldapi: 'goldapi-b2518d8acd816272733c14700e1ba184-io',
+  twelvedata: '0e0b794d2db548cda0683e886fc7fcec',
 };
 
 let state = {
   activeTab: 'dashboard',
   journal: [],
-  keys: { marketaux: DEFAULT_KEYS.marketaux, finnhub: DEFAULT_KEYS.finnhub, goldapi: DEFAULT_KEYS.goldapi, sheetUrl: '' },
+  keys: { marketaux: DEFAULT_KEYS.marketaux, finnhub: DEFAULT_KEYS.finnhub, goldapi: DEFAULT_KEYS.goldapi, twelvedata: DEFAULT_KEYS.twelvedata, sheetUrl: '' },
+  chartInterval: '15', // default M15 — bisa diganti user, ngontrol chart & mesin Prediksi AI sekaligus
   newsFilter: 'ringkasan',
   calImpactFilter: 'all',
   calDate: new Date(),
@@ -435,10 +437,11 @@ function renderTrade() {
             </div>
             <div class="chg" id="tv_chg" style="color:var(--muted);font-weight:700;font-size:11.5px;">Harga real-time ditampilkan langsung oleh TradingView di bawah</div>
           </div>
+          <div class="tf-selector" id="tfSelector"></div>
           <div id="tv_chart_container"><div id="tv_chart" style="width:100%;height:100%;"></div></div>
         </div>
         <div class="card" style="margin-top:12px;">
-          <div class="card-title">Prediksi AI — Smart Money Concept <span class="badge-demo">Rule-based demo, bukan sinyal finansial</span></div>
+          <div class="card-title">Prediksi AI — Smart Money Concept <span class="badge-demo" id="predictionTFBadge">Rule-based demo, bukan sinyal finansial</span></div>
           <div id="predictionBanner"></div>
         </div>
       </div>
@@ -461,11 +464,38 @@ function renderTrade() {
     </div>
   `;
 
+  renderTFSelector();
   loadTradingViewWidget();
   renderSessionList();
   fetchLiveGoldPrice().then(renderPrediction);
   renderPrediction();
 }
+
+function renderTFSelector() {
+  const wrap = document.getElementById('tfSelector');
+  if (!wrap) return;
+  wrap.innerHTML = TF_OPTIONS.map(t => `<button class="tf-btn ${t.tv === state.chartInterval ? 'active' : ''}" data-tv="${t.tv}">${t.label}</button>`).join('');
+  wrap.querySelectorAll('.tf-btn').forEach(btn => {
+    btn.onclick = () => {
+      state.chartInterval = btn.dataset.tv;
+      wrap.querySelectorAll('.tf-btn').forEach(b => b.classList.toggle('active', b === btn));
+      loadTradingViewWidget();
+      renderPrediction();
+    };
+  });
+}
+
+// Daftar timeframe yang bisa dipilih — satu sumber kebenaran buat chart TradingView & mesin Prediksi AI (Twelve Data)
+const TF_OPTIONS = [
+  { tv: '1',   td: '1min',  label: 'M1' },
+  { tv: '5',   td: '5min',  label: 'M5' },
+  { tv: '15',  td: '15min', label: 'M15' },
+  { tv: '30',  td: '30min', label: 'M30' },
+  { tv: '60',  td: '1h',    label: 'H1' },
+  { tv: '240', td: '4h',    label: 'H4' },
+  { tv: 'D',   td: '1day',  label: 'D1' },
+];
+function currentTF() { return TF_OPTIONS.find(t => t.tv === state.chartInterval) || TF_OPTIONS[2]; }
 
 function loadTradingViewWidget() {
   const container = document.getElementById('tv_chart');
@@ -476,7 +506,7 @@ function loadTradingViewWidget() {
     new TradingView.widget({
       autosize: true,
       symbol: 'OANDA:XAUUSD',
-      interval: '60',
+      interval: state.chartInterval,
       timezone: 'Asia/Jakarta',
       theme: document.documentElement.classList.contains('light') ? 'light' : 'dark',
       style: '1',
@@ -505,23 +535,48 @@ async function fetchLiveGoldPrice() {
   clearInterval(goldPriceTimer);
   const pxEl = document.getElementById('tv_px');
   const chgEl = document.getElementById('tv_chg');
-  if (!state.keys.goldapi) { state.liveGoldPrice = null; return; } // biarkan pesan default "Lihat harga live di chart"
-  async function pull() {
+
+  async function tryGoldAPI() {
+    if (!state.keys.goldapi) return null;
     try {
       const res = await fetch('https://www.goldapi.io/api/XAU/USD', {
-        headers: { 'x-access-token': state.keys.goldapi, 'Content-Type': 'application/json' },
+        headers: { 'x-access-token': state.keys.goldapi, 'Accept': 'application/json' },
       });
       const data = await res.json();
-      if (!data.price) throw new Error('no price');
-      state.liveGoldPrice = Number(data.price);
-      if (pxEl) pxEl.textContent = Number(data.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      if (!data.price) return null;
+      return { price: Number(data.price), chg: data.ch ?? null, chgP: data.chp ?? null };
+    } catch (e) {
+      // GoldAPI didokumentasikan buat server-side, kemungkinan besar diblokir CORS di browser — wajar gagal, langsung coba sumber lain.
+      console.warn('GoldAPI gagal (kemungkinan CORS, ini normal karena GoldAPI didesain server-side):', e);
+      return null;
+    }
+  }
+  async function tryTwelveData() {
+    if (!state.keys.twelvedata) return null;
+    try {
+      const res = await fetch(`https://api.twelvedata.com/price?symbol=XAU/USD&apikey=${encodeURIComponent(state.keys.twelvedata)}`);
+      const data = await res.json();
+      if (data.status === 'error' || !data.price) { console.warn('Twelve Data /price error:', data.message || data); return null; }
+      return { price: Number(data.price), chg: null, chgP: null };
+    } catch (e) { console.warn('Twelve Data /price gagal:', e); return null; }
+  }
+
+  async function pull() {
+    const result = (await tryGoldAPI()) || (await tryTwelveData());
+    if (result) {
+      state.liveGoldPrice = result.price;
+      if (pxEl) pxEl.textContent = result.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       if (chgEl) {
-        const chg = data.ch ?? 0, chgP = data.chp ?? 0;
-        chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgP >= 0 ? '+' : ''}${chgP.toFixed(2)}%)`;
-        chgEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
+        if (result.chg !== null) {
+          chgEl.textContent = `${result.chg >= 0 ? '+' : ''}${result.chg.toFixed(2)} (${result.chgP >= 0 ? '+' : ''}${result.chgP.toFixed(2)}%)`;
+          chgEl.style.color = result.chg >= 0 ? 'var(--green)' : 'var(--red)';
+        } else {
+          chgEl.textContent = 'Harga live (Twelve Data)';
+          chgEl.style.color = 'var(--muted)';
+        }
       }
       renderPrediction(); // refresh Entry/SL/TP begitu harga live baru datang
-    } catch (e) {
+    } else {
       state.liveGoldPrice = null;
       if (pxEl) pxEl.textContent = 'Lihat harga live di chart ↓';
     }
@@ -596,77 +651,180 @@ function tickClock() {
 }
 setInterval(tickClock, 1000);
 
-/* ---------------- Prediksi AI — Smart Money Concept (SMC) style, rule-based demo ----------------
-   Menggabungkan Trend/Confidence + setup trading konkret (Entry/SL/TP1/TP2) berdasarkan
-   konsep SMC: struktur pasar (BOS/CHoCH), Order Block, Fair Value Gap (FVG), dan Support/Resistance.
-   PENTING: ini simulasi/heuristik, BUKAN model ML yang beneran baca price action live —
-   karena TradingView widget gratis gak expose data candle ke halaman ini. Kalau GoldAPI key
-   diisi, angka Entry/SL/TP dihitung dari harga live sungguhan; kalau tidak, dari harga acuan
-   demo yang ditandai jelas.
------------------------------------------------------------------------------------------------- */
-function computeSMCSetup() {
-  const isLive = typeof state.liveGoldPrice === 'number' && state.liveGoldPrice > 0;
-  const refPrice = isLive ? state.liveGoldPrice : 2400.00; // harga acuan demo kalau belum ada live price
+/* ---------------- Data Candle Real (Twelve Data) + Indikator Teknikal ----------------
+   Kalau Twelve Data key diisi, kita ambil candle OHLC H1 XAU/USD beneran, lalu hitung
+   sendiri: EMA50, EMA200, RSI14, ATR14, dan swing high/low (buat Order Block/S-R/FVG).
+   Prediksi AI di bawah ini murni turunan dari angka-angka itu, bukan diacak lagi.
+------------------------------------------------------------------------------------- */
+let twelveDataCache = {}; // { [interval]: { candles, ts } }
+async function fetchTwelveDataCandles() {
+  const key = state.keys.twelvedata;
+  if (!key) return null;
+  const tf = currentTF();
+  const cached = twelveDataCache[tf.td];
+  if (cached && (Date.now() - cached.ts) < 3 * 60 * 1000) return cached.candles;
+  try {
+    const outputsize = ['1min','5min'].includes(tf.td) ? 300 : 210;
+    const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${tf.td}&outputsize=${outputsize}&apikey=${encodeURIComponent(key)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.status === 'error' || !data.values || !data.values.length) { console.error('Twelve Data error:', data.message || data); return null; }
+    const candles = data.values.map(v => ({
+      time: v.datetime, open: parseFloat(v.open), high: parseFloat(v.high), low: parseFloat(v.low), close: parseFloat(v.close),
+    })).reverse(); // Twelve Data ngasih terbaru dulu, kita balik jadi kronologis
+    twelveDataCache[tf.td] = { candles, ts: Date.now() };
+    return candles;
+  } catch (e) { console.error('fetchTwelveDataCandles error', e); return null; }
+}
+function emaLast(values, period) {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
+  return e;
+}
+function rsiLast(values, period = 14) {
+  if (values.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) { const d = values[i] - values[i - 1]; if (d >= 0) gains += d; else losses -= d; }
+  let avgGain = gains / period, avgLoss = losses / period;
+  for (let i = period + 1; i < values.length; i++) {
+    const d = values[i] - values[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+function atrLast(candles, period = 14) {
+  if (candles.length < period + 1) return null;
+  const trs = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+  }
+  const last = trs.slice(-period);
+  return last.reduce((a, b) => a + b, 0) / last.length;
+}
+function swingLevels(candles, lookback = 30) {
+  const recent = candles.slice(-lookback);
+  return { swingHigh: Math.max(...recent.map(c => c.high)), swingLow: Math.min(...recent.map(c => c.low)) };
+}
 
-  // Seed berubah tiap jam WIB, jadi setup "napas" sepanjang hari tapi stabil dalam 1 jam yang sama.
+/* ---------------- Prediksi AI — Smart Money Concept (SMC) ----------------
+   Kalau Twelve Data key ada & fetch sukses: dihitung dari indikator REAL (EMA50/200,
+   RSI14, ATR14, swing high/low H1). Kalau tidak: fallback ke simulasi rule-based
+   (seeded per jam) yang ditandai jelas sebagai demo, biar gak nyesatin.
+------------------------------------------------------------------------------------- */
+async function computeSMCSetup() {
+  const isLivePrice = typeof state.liveGoldPrice === 'number' && state.liveGoldPrice > 0;
+  const candles = await fetchTwelveDataCandles();
+
+  if (candles && candles.length >= 60) {
+    const closes = candles.map(c => c.close);
+    const rsi = rsiLast(closes, 14);
+    const emaFast = emaLast(closes, Math.min(50, closes.length - 1));
+    const emaSlow = emaLast(closes, Math.min(200, closes.length - 1));
+    const atr = atrLast(candles, 14) || 12;
+    const swingLookback = { '1min': 60, '5min': 45, '15min': 30, '30min': 24, '1h': 24, '4h': 18, '1day': 14 }[currentTF().td] || 30;
+    const { swingHigh, swingLow } = swingLevels(candles, swingLookback);
+    const lastClose = closes[closes.length - 1];
+    const entry = isLivePrice ? state.liveGoldPrice : lastClose;
+
+    const trendBullish = (emaFast !== null && emaSlow !== null) ? emaFast > emaSlow : entry > (swingHigh + swingLow) / 2;
+    const momentumBullish = rsi === null ? trendBullish : rsi >= 50;
+    const direction = (trendBullish === momentumBullish) ? (trendBullish ? 'BUY' : 'SELL') : (trendBullish ? 'BUY' : 'SELL');
+    let confidence = 55 + (trendBullish === momentumBullish ? 20 : 0);
+    if (rsi !== null) confidence += Math.min(12, Math.round(Math.abs(rsi - 50) / 2));
+    confidence = Math.min(93, confidence);
+
+    let sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel;
+    if (direction === 'BUY') {
+      sl = +Math.min(swingLow, entry - atr).toFixed(2);
+      const risk = entry - sl;
+      tp1 = +(entry + risk * 1.5).toFixed(2);
+      tp2 = +(entry + risk * 3).toFixed(2);
+      obHigh = +(entry - atr * 0.15).toFixed(2); obLow = +(entry - atr * 0.45).toFixed(2);
+      fvgHigh = +(entry - atr * 0.55).toFixed(2); fvgLow = +(entry - atr * 0.75).toFixed(2);
+      srLevel = +swingLow.toFixed(2);
+    } else {
+      sl = +Math.max(swingHigh, entry + atr).toFixed(2);
+      const risk = sl - entry;
+      tp1 = +(entry - risk * 1.5).toFixed(2);
+      tp2 = +(entry - risk * 3).toFixed(2);
+      obLow = +(entry + atr * 0.15).toFixed(2); obHigh = +(entry + atr * 0.45).toFixed(2);
+      fvgLow = +(entry + atr * 0.55).toFixed(2); fvgHigh = +(entry + atr * 0.75).toFixed(2);
+      srLevel = +swingHigh.toFixed(2);
+    }
+    return {
+      isReal: true, isLivePrice, direction, confidence: Math.round(confidence),
+      entry, sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel,
+      rsi: rsi !== null ? rsi.toFixed(1) : '-',
+      emaFast: emaFast !== null ? emaFast.toFixed(2) : '-',
+      emaSlow: emaSlow !== null ? emaSlow.toFixed(2) : '-',
+    };
+  }
+
+  // ---- Fallback: simulasi rule-based (Twelve Data key belum diisi / fetch gagal) ----
+  // Catatan: 4340 = perkiraan harga XAUUSD terakhir yang aku tahu (Agustus 2026). Ini CUMA
+  // dipakai kalau GoldAPI & Twelve Data dua-duanya gagal fetch — bisa jadi udah basi kalau
+  // harga emas bergerak jauh. Prioritas utama tetap dari live API, ini fallback darurat aja.
+  const refPrice = isLivePrice ? state.liveGoldPrice : 4340.00;
   const p = getWIBParts(new Date());
   const rnd = seededRandom(`${p.year}${p.month}${p.day}${p.hour}`);
-
-  const bosBullish = rnd() > 0.42; // bias struktur (Break of Structure)
+  const bosBullish = rnd() > 0.42;
   const direction = bosBullish ? 'BUY' : 'SELL';
-  const confidence = 62 + Math.floor(rnd() * 26); // 62-88%
-
-  // "ATR" harian simulasi buat nentuin lebar SL/TP & zona OB/FVG (dalam $ per oz)
-  const atr = 9 + rnd() * 9; // 9-18
-
-  let entry, sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel;
+  const confidence = 62 + Math.floor(rnd() * 26);
+  const atr = 9 + rnd() * 9;
+  let entry = refPrice, sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel;
   if (bosBullish) {
-    entry = refPrice;
-    sl = +(entry - atr * 1.0).toFixed(2);
-    tp1 = +(entry + atr * 1.5).toFixed(2);
-    tp2 = +(entry + atr * 3.0).toFixed(2);
-    obHigh = +(entry - atr * 0.15).toFixed(2);
-    obLow = +(entry - atr * 0.45).toFixed(2);
-    fvgHigh = +(entry - atr * 0.55).toFixed(2);
-    fvgLow = +(entry - atr * 0.75).toFixed(2);
+    sl = +(entry - atr).toFixed(2); tp1 = +(entry + atr * 1.5).toFixed(2); tp2 = +(entry + atr * 3).toFixed(2);
+    obHigh = +(entry - atr * 0.15).toFixed(2); obLow = +(entry - atr * 0.45).toFixed(2);
+    fvgHigh = +(entry - atr * 0.55).toFixed(2); fvgLow = +(entry - atr * 0.75).toFixed(2);
     srLevel = +(entry - atr * 1.2).toFixed(2);
   } else {
-    entry = refPrice;
-    sl = +(entry + atr * 1.0).toFixed(2);
-    tp1 = +(entry - atr * 1.5).toFixed(2);
-    tp2 = +(entry - atr * 3.0).toFixed(2);
-    obLow = +(entry + atr * 0.15).toFixed(2);
-    obHigh = +(entry + atr * 0.45).toFixed(2);
-    fvgLow = +(entry + atr * 0.55).toFixed(2);
-    fvgHigh = +(entry + atr * 0.75).toFixed(2);
+    sl = +(entry + atr).toFixed(2); tp1 = +(entry - atr * 1.5).toFixed(2); tp2 = +(entry - atr * 3).toFixed(2);
+    obLow = +(entry + atr * 0.15).toFixed(2); obHigh = +(entry + atr * 0.45).toFixed(2);
+    fvgLow = +(entry + atr * 0.55).toFixed(2); fvgHigh = +(entry + atr * 0.75).toFixed(2);
     srLevel = +(entry + atr * 1.2).toFixed(2);
   }
-  return { isLive, direction, confidence, entry, sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel };
+  return { isReal: false, isLivePrice, direction, confidence, entry, sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel };
 }
 function fmtPx(n) { return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
-function renderPrediction() {
+async function renderPrediction() {
   const banner = document.getElementById('predictionBanner');
   if (!banner) return;
-  const s = computeSMCSetup();
+  const badge = document.getElementById('predictionTFBadge');
+  if (badge) badge.textContent = `Timeframe ${currentTF().label} · Rule-based demo`;
+  banner.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:12.5px;">Menghitung struktur pasar ${currentTF().label}...</div>`;
+  const s = await computeSMCSetup();
+  if (document.getElementById('predictionBanner') !== banner) return; // user udah pindah tab
   const isBuy = s.direction === 'BUY';
   const rr1 = (Math.abs(s.tp1 - s.entry) / Math.abs(s.entry - s.sl)).toFixed(2);
   const rr2 = (Math.abs(s.tp2 - s.entry) / Math.abs(s.entry - s.sl)).toFixed(2);
 
+  let statusNote = '';
+  if (s.isReal) {
+    statusNote = `<div style="font-size:11px;color:var(--green);background:var(--green-soft);border:1px solid rgba(34,197,94,.3);padding:7px 10px;border-radius:8px;margin-bottom:10px;">✅ Dihitung dari data candle ${currentTF().label} real (Twelve Data): RSI14 ${s.rsi}, EMA50 $${s.emaFast}, EMA200 $${s.emaSlow}.${!s.isLivePrice ? ' Entry pakai close candle terakhir — isi GoldAPI key juga biar Entry pakai harga live tick.' : ''}</div>`;
+  } else {
+    statusNote = `<div style="font-size:11px;color:var(--red);background:var(--red-soft);border:1px solid rgba(239,68,68,.3);padding:7px 10px;border-radius:8px;margin-bottom:10px;">⚠️ <b>Mode simulasi — harga acuan BISA JAUH BEDA dari harga real di chart.</b> Twelve Data gagal diambil (cek Console browser buat lihat pesan errornya). Isi/cek ulang <b>Twelve Data API key</b> di ⚙️ Pengaturan.</div>`;
+  }
+
   banner.innerHTML = `
-    ${!s.isLive ? `<div style="font-size:11px;color:var(--gold);background:var(--gold-soft);border:1px solid rgba(240,180,41,.3);padding:7px 10px;border-radius:8px;margin-bottom:10px;">⚠️ Harga acuan masih demo (${fmtPx(s.entry)}). Isi <b>GoldAPI.io key</b> di ⚙️ Pengaturan supaya Entry/SL/TP dihitung dari harga live sungguhan.</div>` : ''}
+    ${statusNote}
     <div class="prediction-banner ${isBuy ? 'buy' : 'sell'}">
       <div>
         <div class="prediction-dir ${isBuy ? 'buy' : 'sell'}">${isBuy ? '▲ BUY' : '▼ SELL'}</div>
-        <div class="prediction-meta">Struktur pasar: <b style="color:var(--text)">${isBuy ? 'Bullish BOS (Break of Structure)' : 'Bearish BOS (Break of Structure)'}</b> — H1</div>
+        <div class="prediction-meta">Struktur pasar: <b style="color:var(--text)">${isBuy ? 'Bullish BOS (Break of Structure)' : 'Bearish BOS (Break of Structure)'}</b> — ${currentTF().label}${s.isReal ? ` · RSI14: ${s.rsi} · EMA50 ${s.emaFast > s.emaSlow ? '>' : '<'} EMA200` : ''}</div>
         <div class="confidence-bar"><div class="confidence-fill ${isBuy ? 'buy' : 'sell'}" style="width:${s.confidence}%;"></div></div>
         <div class="prediction-meta">Confidence: <b style="color:var(--text)">${s.confidence}%</b></div>
       </div>
       <ul class="ai-reasons" style="min-width:220px;">
         <li>Order Block ${isBuy ? 'bullish' : 'bearish'}: $${fmtPx(Math.min(s.obLow,s.obHigh))} – $${fmtPx(Math.max(s.obLow,s.obHigh))}</li>
         <li>Fair Value Gap (FVG): $${fmtPx(Math.min(s.fvgLow,s.fvgHigh))} – $${fmtPx(Math.max(s.fvgLow,s.fvgHigh))}</li>
-        <li>Key ${isBuy ? 'Support' : 'Resistance'}: $${fmtPx(s.srLevel)}</li>
-        <li>Sentimen berita &amp; DXY mendukung bias ${isBuy ? 'bullish' : 'bearish'}</li>
+        <li>Key ${isBuy ? 'Support' : 'Resistance'} (swing ${currentTF().label}): $${fmtPx(s.srLevel)}</li>
+        <li>${s.isReal ? `RSI14 ${s.rsi} ${Number(s.rsi) >= 50 ? '(momentum naik)' : '(momentum turun)'}` : `Sentimen berita &amp; DXY mendukung bias ${isBuy ? 'bullish' : 'bearish'}`}</li>
       </ul>
     </div>
     <div class="grid smc-grid" style="margin-top:12px;">
@@ -1288,6 +1446,7 @@ function openSettingsModal() {
   document.getElementById('key_marketaux').value = state.keys.marketaux || '';
   document.getElementById('key_finnhub').value = state.keys.finnhub || '';
   document.getElementById('key_goldapi').value = state.keys.goldapi || '';
+  document.getElementById('key_twelvedata').value = state.keys.twelvedata || '';
   document.getElementById('key_sheeturl').value = state.keys.sheetUrl || '';
   document.getElementById('settingsModalOverlay').classList.add('open');
 }
@@ -1313,13 +1472,16 @@ function wireGlobalEvents() {
     state.keys.marketaux = document.getElementById('key_marketaux').value.trim();
     state.keys.finnhub = document.getElementById('key_finnhub').value.trim();
     state.keys.goldapi = document.getElementById('key_goldapi').value.trim();
+    state.keys.twelvedata = document.getElementById('key_twelvedata').value.trim();
     const prevSheetUrl = state.keys.sheetUrl;
     state.keys.sheetUrl = document.getElementById('key_sheeturl').value.trim();
     saveKeys();
     closeSettingsModal();
     toast('Pengaturan disimpan.');
+    twelveDataCache = null; // paksa fetch ulang candle kalau key baru diisi
     if (state.activeTab === 'berita') renderBerita(true);
     if (state.activeTab === 'kalender') renderKalender();
+    if (state.activeTab === 'trade') { await fetchLiveGoldPrice(); renderPrediction(); }
     if (state.keys.sheetUrl && state.keys.sheetUrl !== prevSheetUrl) {
       await syncFromSheet(true);
     }
