@@ -438,7 +438,7 @@ function renderTrade() {
           <div id="tv_chart_container"><div id="tv_chart" style="width:100%;height:100%;"></div></div>
         </div>
         <div class="card" style="margin-top:12px;">
-          <div class="card-title">Prediksi AI <span class="badge-demo">Rule-based demo</span></div>
+          <div class="card-title">Prediksi AI — Smart Money Concept <span class="badge-demo">Rule-based demo, bukan sinyal finansial</span></div>
           <div id="predictionBanner"></div>
         </div>
       </div>
@@ -453,10 +453,6 @@ function renderTrade() {
           <div class="session-list" id="sessionList"></div>
         </div>
         <div class="card">
-          <div class="card-title">AI Analysis <span class="badge-demo">Rule-based demo</span></div>
-          <div class="ai-box" id="aiBox"></div>
-        </div>
-        <div class="card">
           <div class="card-title">Volatility &amp; News</div>
           <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">Volatility: <b class="gold-txt">HIGH ★★★★★</b></div>
           <div style="font-size:12px;color:var(--muted);">Next high impact: <b style="color:var(--text)">US CPI</b></div>
@@ -467,8 +463,7 @@ function renderTrade() {
 
   loadTradingViewWidget();
   renderSessionList();
-  renderAIAnalysis();
-  fetchLiveGoldPrice();
+  fetchLiveGoldPrice().then(renderPrediction);
   renderPrediction();
 }
 
@@ -510,7 +505,7 @@ async function fetchLiveGoldPrice() {
   clearInterval(goldPriceTimer);
   const pxEl = document.getElementById('tv_px');
   const chgEl = document.getElementById('tv_chg');
-  if (!state.keys.goldapi) return; // biarkan pesan default "Lihat harga live di chart"
+  if (!state.keys.goldapi) { state.liveGoldPrice = null; return; } // biarkan pesan default "Lihat harga live di chart"
   async function pull() {
     try {
       const res = await fetch('https://www.goldapi.io/api/XAU/USD', {
@@ -518,17 +513,20 @@ async function fetchLiveGoldPrice() {
       });
       const data = await res.json();
       if (!data.price) throw new Error('no price');
+      state.liveGoldPrice = Number(data.price);
       if (pxEl) pxEl.textContent = Number(data.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       if (chgEl) {
         const chg = data.ch ?? 0, chgP = data.chp ?? 0;
         chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgP >= 0 ? '+' : ''}${chgP.toFixed(2)}%)`;
         chgEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
       }
+      renderPrediction(); // refresh Entry/SL/TP begitu harga live baru datang
     } catch (e) {
+      state.liveGoldPrice = null;
       if (pxEl) pxEl.textContent = 'Lihat harga live di chart ↓';
     }
   }
-  pull();
+  await pull();
   goldPriceTimer = setInterval(pull, 60 * 1000); // hemat kuota, refresh tiap 1 menit
 }
 
@@ -563,6 +561,16 @@ function renderSessionList() {
     </div>`;
   }).join('');
 }
+function seededRandom(seedStr) {
+  let h = 1779033703 ^ seedStr.length;
+  for (let i = 0; i < seedStr.length; i++) { h = Math.imul(h ^ seedStr.charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19); }
+  return function () {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+}
 function getWIBParts(now) {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Jakarta', hourCycle: 'h23',
@@ -588,48 +596,84 @@ function tickClock() {
 }
 setInterval(tickClock, 1000);
 
-/* ---------------- AI Analysis (rule-based demo) ---------------- */
-function renderAIAnalysis() {
-  const box = document.getElementById('aiBox');
-  if (!box) return;
-  // Simple demo rule-based signal (placeholder; ganti dengan data real jika API tersedia)
-  const trend = 'BULLISH', confidence = 86, signal = 'BUY';
-  box.innerHTML = `
-    <div class="ai-row"><span>Trend</span><span class="pill bullish">${trend}</span></div>
-    <div class="ai-row"><span>Confidence</span><b>${confidence}%</b></div>
-    <div class="ai-row"><span>Signal</span><span class="pill bullish">${signal}</span></div>
-    <ul class="ai-reasons">
-      <li>EMA 50 &gt; EMA 200</li>
-      <li>RSI di atas 50</li>
-      <li>DXY melemah</li>
-      <li>US10Y Yield turun</li>
-    </ul>
-  `;
-}
+/* ---------------- Prediksi AI — Smart Money Concept (SMC) style, rule-based demo ----------------
+   Menggabungkan Trend/Confidence + setup trading konkret (Entry/SL/TP1/TP2) berdasarkan
+   konsep SMC: struktur pasar (BOS/CHoCH), Order Block, Fair Value Gap (FVG), dan Support/Resistance.
+   PENTING: ini simulasi/heuristik, BUKAN model ML yang beneran baca price action live —
+   karena TradingView widget gratis gak expose data candle ke halaman ini. Kalau GoldAPI key
+   diisi, angka Entry/SL/TP dihitung dari harga live sungguhan; kalau tidak, dari harga acuan
+   demo yang ditandai jelas.
+------------------------------------------------------------------------------------------------ */
+function computeSMCSetup() {
+  const isLive = typeof state.liveGoldPrice === 'number' && state.liveGoldPrice > 0;
+  const refPrice = isLive ? state.liveGoldPrice : 2400.00; // harga acuan demo kalau belum ada live price
 
-/* ---------------- Prediksi Arah (Buy/Sell) — rule-based demo ---------------- */
+  // Seed berubah tiap jam WIB, jadi setup "napas" sepanjang hari tapi stabil dalam 1 jam yang sama.
+  const p = getWIBParts(new Date());
+  const rnd = seededRandom(`${p.year}${p.month}${p.day}${p.hour}`);
+
+  const bosBullish = rnd() > 0.42; // bias struktur (Break of Structure)
+  const direction = bosBullish ? 'BUY' : 'SELL';
+  const confidence = 62 + Math.floor(rnd() * 26); // 62-88%
+
+  // "ATR" harian simulasi buat nentuin lebar SL/TP & zona OB/FVG (dalam $ per oz)
+  const atr = 9 + rnd() * 9; // 9-18
+
+  let entry, sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel;
+  if (bosBullish) {
+    entry = refPrice;
+    sl = +(entry - atr * 1.0).toFixed(2);
+    tp1 = +(entry + atr * 1.5).toFixed(2);
+    tp2 = +(entry + atr * 3.0).toFixed(2);
+    obHigh = +(entry - atr * 0.15).toFixed(2);
+    obLow = +(entry - atr * 0.45).toFixed(2);
+    fvgHigh = +(entry - atr * 0.55).toFixed(2);
+    fvgLow = +(entry - atr * 0.75).toFixed(2);
+    srLevel = +(entry - atr * 1.2).toFixed(2);
+  } else {
+    entry = refPrice;
+    sl = +(entry + atr * 1.0).toFixed(2);
+    tp1 = +(entry - atr * 1.5).toFixed(2);
+    tp2 = +(entry - atr * 3.0).toFixed(2);
+    obLow = +(entry + atr * 0.15).toFixed(2);
+    obHigh = +(entry + atr * 0.45).toFixed(2);
+    fvgLow = +(entry + atr * 0.55).toFixed(2);
+    fvgHigh = +(entry + atr * 0.75).toFixed(2);
+    srLevel = +(entry + atr * 1.2).toFixed(2);
+  }
+  return { isLive, direction, confidence, entry, sl, tp1, tp2, obLow, obHigh, fvgLow, fvgHigh, srLevel };
+}
+function fmtPx(n) { return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
 function renderPrediction() {
   const banner = document.getElementById('predictionBanner');
   if (!banner) return;
-  // Demo rule-based prediction. Untuk versi real, ganti dengan hasil kalkulasi
-  // indikator live (EMA/RSI/MACD) dari data candle broker/data feed.
-  const direction = 'BUY';
-  const confidence = 78;
-  const isBuy = direction === 'BUY';
+  const s = computeSMCSetup();
+  const isBuy = s.direction === 'BUY';
+  const rr1 = (Math.abs(s.tp1 - s.entry) / Math.abs(s.entry - s.sl)).toFixed(2);
+  const rr2 = (Math.abs(s.tp2 - s.entry) / Math.abs(s.entry - s.sl)).toFixed(2);
+
   banner.innerHTML = `
+    ${!s.isLive ? `<div style="font-size:11px;color:var(--gold);background:var(--gold-soft);border:1px solid rgba(240,180,41,.3);padding:7px 10px;border-radius:8px;margin-bottom:10px;">⚠️ Harga acuan masih demo (${fmtPx(s.entry)}). Isi <b>GoldAPI.io key</b> di ⚙️ Pengaturan supaya Entry/SL/TP dihitung dari harga live sungguhan.</div>` : ''}
     <div class="prediction-banner ${isBuy ? 'buy' : 'sell'}">
       <div>
         <div class="prediction-dir ${isBuy ? 'buy' : 'sell'}">${isBuy ? '▲ BUY' : '▼ SELL'}</div>
-        <div class="prediction-meta">Prediksi arah XAUUSD jangka pendek (H1), berdasarkan RSI, EMA 50/200 &amp; sentimen berita.</div>
-        <div class="confidence-bar"><div class="confidence-fill ${isBuy ? 'buy' : 'sell'}" style="width:${confidence}%;"></div></div>
-        <div class="prediction-meta">Confidence: <b style="color:var(--text)">${confidence}%</b></div>
+        <div class="prediction-meta">Struktur pasar: <b style="color:var(--text)">${isBuy ? 'Bullish BOS (Break of Structure)' : 'Bearish BOS (Break of Structure)'}</b> — H1</div>
+        <div class="confidence-bar"><div class="confidence-fill ${isBuy ? 'buy' : 'sell'}" style="width:${s.confidence}%;"></div></div>
+        <div class="prediction-meta">Confidence: <b style="color:var(--text)">${s.confidence}%</b></div>
       </div>
-      <ul class="ai-reasons" style="min-width:200px;">
-        <li>RSI 14 di atas 50 (momentum naik)</li>
-        <li>EMA 50 &gt; EMA 200 (uptrend)</li>
-        <li>Sentimen berita cenderung bullish</li>
-        <li>DXY melemah, mendukung harga emas</li>
+      <ul class="ai-reasons" style="min-width:220px;">
+        <li>Order Block ${isBuy ? 'bullish' : 'bearish'}: $${fmtPx(Math.min(s.obLow,s.obHigh))} – $${fmtPx(Math.max(s.obLow,s.obHigh))}</li>
+        <li>Fair Value Gap (FVG): $${fmtPx(Math.min(s.fvgLow,s.fvgHigh))} – $${fmtPx(Math.max(s.fvgLow,s.fvgHigh))}</li>
+        <li>Key ${isBuy ? 'Support' : 'Resistance'}: $${fmtPx(s.srLevel)}</li>
+        <li>Sentimen berita &amp; DXY mendukung bias ${isBuy ? 'bullish' : 'bearish'}</li>
       </ul>
+    </div>
+    <div class="grid smc-grid" style="margin-top:12px;">
+      <div class="stat mini"><div class="lbl">Entry</div><div class="val">$${fmtPx(s.entry)}</div></div>
+      <div class="stat mini"><div class="lbl">Stop Loss</div><div class="val down">$${fmtPx(s.sl)}</div></div>
+      <div class="stat mini"><div class="lbl">TP 1 (1:${rr1})</div><div class="val up">$${fmtPx(s.tp1)}</div></div>
+      <div class="stat mini"><div class="lbl">TP 2 (1:${rr2})</div><div class="val up">$${fmtPx(s.tp2)}</div></div>
     </div>
   `;
 }
@@ -718,32 +762,83 @@ function demoNews() {
 }
 
 const REGION_DOMAINS = {
-  indonesia: 'cnbcindonesia.com,bisnis.com,kontan.co.id,idxchannel.com,antaranews.com,detik.com,finance.detik.com,bloombergtechnoz.com',
-  global: 'reuters.com,bloomberg.com,kitco.com,investing.com,forexlive.com,fxstreet.com,marketwatch.com,tradingeconomics.com',
+  indonesia: ['cnbcindonesia.com','bisnis.com','kontan.co.id','idxchannel.com','antaranews.com','detik.com','bloombergtechnoz.com'],
+  global: ['reuters.com','bloomberg.com','kitco.com','investing.com','forexlive.com','fxstreet.com','marketwatch.com','tradingeconomics.com'],
 };
-async function fetchMarketauxRegion(region) {
+// Satu kali fetch broad (tanpa filter domains/published_after yang sering bikin hasil kosong
+// di paket gratis Marketaux), lalu diklasifikasi Indonesia/Global belakangan dari domain sumbernya.
+let marketauxRawCache = null;
+async function fetchMarketauxAll() {
   const key = state.keys.marketaux;
   if (!key) return null;
   try {
-    const publishedAfter = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString().slice(0, 19);
-    const search = region === 'indonesia'
-      ? encodeURIComponent('emas OR dolar OR "the fed" OR "suku bunga" OR rupiah OR inflasi')
-      : encodeURIComponent('gold OR XAUUSD OR "interest rate" OR inflation OR "federal reserve" OR dollar');
-    const lang = region === 'indonesia' ? 'id' : 'en';
-    const url = `https://api.marketaux.com/v1/news/all?domains=${REGION_DOMAINS[region]}&search=${search}&language=${lang}&published_after=${publishedAfter}&sort=published_desc&limit=15&api_token=${encodeURIComponent(key)}`;
+    const search = encodeURIComponent('gold OR XAUUSD OR emas OR "the fed" OR "federal reserve" OR dollar OR inflation OR "interest rate" OR rupiah');
+    const url = `https://api.marketaux.com/v1/news/all?search=${search}&language=en,id&sort=published_desc&limit=50&api_token=${encodeURIComponent(key)}`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error('bad response ' + res.status);
+    if (!res.ok) { console.error('Marketaux HTTP', res.status, await res.text().catch(()=> '')); return null; }
     const data = await res.json();
+    if (data.error) { console.error('Marketaux API error:', data.error); return null; }
     if (!data.data || !data.data.length) return null;
     return data.data.map(a => ({
       title: a.title,
       source: (a.source || '').replace(/^www\./, '') || 'Marketaux',
-      region,
       hoursAgo: Math.max(0.05, (Date.now() - new Date(a.published_at).getTime()) / 3600000),
       impact: impactScore(a.title),
       sentiment: classifyNews(a.title),
     }));
-  } catch (e) { console.error('fetchMarketauxRegion(' + region + ')', e); return null; }
+  } catch (e) { console.error('fetchMarketauxAll error', e); return null; }
+}
+async function fetchMarketauxRegion(region) {
+  if (!marketauxRawCache) marketauxRawCache = await fetchMarketauxAll();
+  if (!marketauxRawCache) return null;
+  const domains = REGION_DOMAINS[region];
+  const matched = marketauxRawCache.filter(n => domains.some(d => n.source.toLowerCase().includes(d.replace(/\.(com|co\.id)$/,''))));
+  return matched.length ? matched.map(n => ({ ...n, region })) : null;
+}
+
+/* ---- Google News RSS (gratis, tanpa API key) — cadangan utama, terutama buat
+   sumber Indonesia karena Marketaux gak nge-index media lokal Indonesia sama sekali.
+   Dipanggil lewat CORS proxy publik karena Google News RSS gak kirim header CORS. ---- */
+const CORS_PROXIES = [
+  (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  (u) => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+  (u) => 'https://r.jina.ai/' + u,
+];
+const GNEWS_SITE_FILTER = {
+  indonesia: 'site:cnbcindonesia.com OR site:bisnis.com OR site:kontan.co.id OR site:idxchannel.com OR site:detik.com OR site:antaranews.com OR site:bloombergtechnoz.com',
+  global: 'site:reuters.com OR site:bloomberg.com OR site:kitco.com OR site:investing.com OR site:forexlive.com OR site:fxstreet.com OR site:marketwatch.com',
+};
+async function fetchGoogleNewsRegion(region) {
+  const query = region === 'indonesia'
+    ? `(emas OR dolar OR "suku bunga" OR rupiah OR inflasi OR "the fed") (${GNEWS_SITE_FILTER.indonesia})`
+    : `(gold OR XAUUSD OR "interest rate" OR "federal reserve" OR dollar) (${GNEWS_SITE_FILTER.global})`;
+  const hl = region === 'indonesia' ? 'id' : 'en-US';
+  const gl = region === 'indonesia' ? 'ID' : 'US';
+  const ceid = region === 'indonesia' ? 'ID:id' : 'US:en';
+  const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=${ceid}`;
+
+  for (const buildProxyUrl of CORS_PROXIES) {
+    try {
+      const res = await fetch(buildProxyUrl(rssUrl));
+      if (!res.ok) continue;
+      const text = await res.text();
+      const xml = new DOMParser().parseFromString(text, 'text/xml');
+      const items = Array.from(xml.querySelectorAll('item')).slice(0, 15);
+      if (!items.length) continue;
+      return items.map(it => {
+        const rawTitle = it.querySelector('title')?.textContent || '';
+        const sourceTag = it.querySelector('source')?.textContent || '';
+        // Judul Google News RSS biasanya "Headline - Nama Sumber"
+        const dashIdx = rawTitle.lastIndexOf(' - ');
+        const title = sourceTag ? rawTitle : (dashIdx > -1 ? rawTitle.slice(0, dashIdx) : rawTitle);
+        const source = sourceTag || (dashIdx > -1 ? rawTitle.slice(dashIdx + 3) : 'Google News');
+        const pubDate = it.querySelector('pubDate')?.textContent;
+        const hoursAgo = pubDate ? Math.max(0.05, (Date.now() - new Date(pubDate).getTime()) / 3600000) : 6;
+        return { title, source, region, hoursAgo, impact: impactScore(title), sentiment: classifyNews(title) };
+      });
+    } catch (e) { console.error('fetchGoogleNewsRegion(' + region + ') proxy failed', e); }
+  }
+  return null;
 }
 
 let newsCache = null; // { indonesia: [...], global: [...] }
@@ -751,7 +846,15 @@ let newsLastFetch = 0;
 async function getNews(forceRefresh) {
   const now = Date.now();
   if (!forceRefresh && newsCache && (now - newsLastFetch) < 5 * 60 * 1000) return newsCache;
-  const [liveID, liveGlobal] = await Promise.all([fetchMarketauxRegion('indonesia'), fetchMarketauxRegion('global')]);
+  if (forceRefresh) marketauxRawCache = null; // paksa fetch ulang, jangan pakai cache lama
+
+  // Coba Marketaux dulu (satu request, diklasifikasi belakangan), lalu Google News RSS sebagai cadangan
+  const [mtxID, mtxGlobal] = await Promise.all([fetchMarketauxRegion('indonesia'), fetchMarketauxRegion('global')]);
+  let liveID = (mtxID && mtxID.length >= 3) ? mtxID : null;
+  let liveGlobal = (mtxGlobal && mtxGlobal.length >= 3) ? mtxGlobal : null;
+  if (!liveID) liveID = await fetchGoogleNewsRegion('indonesia');
+  if (!liveGlobal) liveGlobal = await fetchGoogleNewsRegion('global');
+
   const demo = demoNews();
   newsCache = {
     indonesia: (liveID && liveID.length >= 3) ? liveID : demo.filter(n => n.region === 'indonesia'),
